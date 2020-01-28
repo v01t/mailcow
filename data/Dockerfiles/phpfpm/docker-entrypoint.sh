@@ -1,5 +1,7 @@
 #!/bin/bash
 
+#!TODO: Parametrize mysql and postfix container names
+
 function array_by_comma { local IFS=","; echo "$*"; }
 
 # Wait for containers
@@ -8,28 +10,28 @@ while ! mysqladmin status --socket=/var/run/mysqld/mysqld.sock -u${DBUSER} -p${D
   sleep 2
 done
 
-until [[ $(redis-cli -h redis-mailcow PING) == "PONG" ]]; do
+until [[ $(redis-cli -h ${REDIS_HOSTNAME} PING) == "PONG" ]]; do
   echo "Waiting for Redis..."
   sleep 2
 done
 
 # Set a default release format
 
-if [[ -z $(redis-cli --raw -h redis-mailcow GET Q_RELEASE_FORMAT) ]]; then
-  redis-cli --raw -h redis-mailcow SET Q_RELEASE_FORMAT raw
+if [[ -z $(redis-cli --raw -h ${REDIS_HOSTNAME} GET Q_RELEASE_FORMAT) ]]; then
+  redis-cli --raw -h ${REDIS_HOSTNAME} SET Q_RELEASE_FORMAT raw
 fi
 
 # Set max age of q items - if unset
 
-if [[ -z $(redis-cli --raw -h redis-mailcow GET Q_MAX_AGE) ]]; then
-  redis-cli --raw -h redis-mailcow SET Q_MAX_AGE 365
+if [[ -z $(redis-cli --raw -h ${REDIS_HOSTNAME} GET Q_MAX_AGE) ]]; then
+  redis-cli --raw -h ${REDIS_HOSTNAME} SET Q_MAX_AGE 365
 fi
 
 # Check mysql_upgrade
 
 CONTAINER_ID=
 until [[ ! -z "${CONTAINER_ID}" ]] && [[ "${CONTAINER_ID}" =~ ^[[:alnum:]]*$ ]]; do
-  CONTAINER_ID=$(curl --silent --insecure https://dockerapi/containers/json | jq -r ".[] | {name: .Config.Labels[\"com.docker.compose.service\"], id: .Id}" 2> /dev/null | jq -rc "select( .name | tostring | contains(\"mysql-mailcow\")) | .id" 2> /dev/null)
+  CONTAINER_ID=$(curl --silent --insecure https://dockerapi/containers/json | jq -r ".[] | {name: .Config.Labels[\"com.docker.compose.service\"], id: .Id}" 2> /dev/null | jq -rc "select( .name | tostring | contains(\"mysql\")) | .id" 2> /dev/null)
 done
 echo "MySQL @ ${CONTAINER_ID}"
 SQL_LOOP_C=0
@@ -64,7 +66,7 @@ done
 
 # doing post-installation stuff, if SQL was upgraded
 if [ ${SQL_CHANGED} -eq 1 ]; then
-  POSTFIX=($(curl --silent --insecure https://dockerapi/containers/json | jq -r '.[] | {name: .Config.Labels["com.docker.compose.service"], id: .Id}' | jq -rc 'select( .name | tostring | contains("postfix-mailcow")) | .id' | tr "\n" " "))
+  POSTFIX=($(curl --silent --insecure https://dockerapi/containers/json | jq -r '.[] | {name: .Config.Labels["com.docker.compose.service"], id: .Id}' | jq -rc 'select( .name | tostring | contains("postfix")) | .id' | tr "\n" " "))
   if [[ -z ${POSTFIX} ]]; then
     echo "Could not determine Postfix container ID, skipping Postfix restart."
   else
@@ -90,7 +92,7 @@ php -c /usr/local/etc/php -f /web/inc/init_db.inc.php
 # Recreating domain map
 echo "Rebuilding domain map in Redis..."
 declare -a DOMAIN_ARR
-  redis-cli -h redis-mailcow DEL DOMAIN_MAP > /dev/null
+  redis-cli -h ${REDIS_HOSTNAME} DEL DOMAIN_MAP > /dev/null
 while read line
 do
   DOMAIN_ARR+=("$line")
@@ -102,7 +104,7 @@ done < <(mysql --socket=/var/run/mysqld/mysqld.sock -u ${DBUSER} -p${DBPASS} ${D
 
 if [[ ! -z ${DOMAIN_ARR} ]]; then
 for domain in "${DOMAIN_ARR[@]}"; do
-  redis-cli -h redis-mailcow HSET DOMAIN_MAP ${domain} 1 > /dev/null
+  redis-cli -h ${REDIS_HOSTNAME} HSET DOMAIN_MAP ${domain} 1 > /dev/null
 done
 fi
 
